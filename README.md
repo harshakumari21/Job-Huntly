@@ -55,7 +55,7 @@ cd Job-Huntly
 
 The backend default configuration is in:
 
-- `/tmp/workspace/harshakumari21/Job-Huntly/backend/src/main/resources/application.yml`
+- `backend/src/main/resources/application.yml`
 
 By default it expects:
 
