@@ -1,0 +1,270 @@
+package com.jobhuntly.backend.service;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jobhuntly.backend.dto.ReportJobRequest;
+import com.jobhuntly.backend.dto.SaveJobRequest;
+import com.jobhuntly.backend.entity.*;
+import com.jobhuntly.backend.repository.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+@Service
+public class JobActionService {
+    
+    @Autowired
+    private JobActionRepository jobActionRepository;
+    
+    @Autowired
+    private UserRepository userRepository;
+    
+    @Autowired
+    private JobRepository jobRepository;
+
+    @Autowired
+    private ObjectMapper objectMapper;
+
+    private String toMetadataJson(Map<String, Object> metadata) {
+        if (metadata == null || metadata.isEmpty()) {
+            return null;
+        }
+
+        try {
+            return objectMapper.writeValueAsString(metadata);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private Map<String, Object> parseMetadata(String metadata) {
+        if (metadata == null || metadata.isBlank()) {
+            return new LinkedHashMap<>();
+        }
+
+        try {
+            return objectMapper.readValue(metadata, LinkedHashMap.class);
+        } catch (Exception ignored) {
+            Map<String, Object> fallback = new LinkedHashMap<>();
+            fallback.put("value", metadata);
+            return fallback;
+        }
+    }
+    
+    // Unified Job Action functionality
+    @Transactional
+    public Map<String, Object> performJobAction(String userEmail, Long jobId, JobAction.ActionType actionType, String metadata) {
+        User user = userRepository.findByEmail(userEmail)
+            .orElseThrow(() -> new RuntimeException("User not found"));
+        
+        Job job = jobRepository.findById(jobId)
+            .orElseThrow(() -> new RuntimeException("Job not found"));
+        
+        Map<String, Object> response = new HashMap<>();
+        
+        // Check if action already exists
+        if (jobActionRepository.existsByUserAndJobAndActionType(user, job, actionType)) {
+            response.put("success", false);
+            response.put("message", getAlreadyExistsMessage(actionType));
+            response.put("alreadyExists", true);
+            return response;
+        }
+        
+        // Create new action
+        JobAction jobAction = new JobAction(user, job, actionType, metadata);
+        jobActionRepository.save(jobAction);
+        
+        response.put("success", true);
+        response.put("message", getSuccessMessage(actionType));
+        response.put("actionId", jobAction.getId());
+        return response;
+    }
+    
+    @Transactional
+    public Map<String, Object> removeJobAction(String userEmail, Long jobId, JobAction.ActionType actionType) {
+        User user = userRepository.findByEmail(userEmail)
+            .orElseThrow(() -> new RuntimeException("User not found"));
+        
+        Job job = jobRepository.findById(jobId)
+            .orElseThrow(() -> new RuntimeException("Job not found"));
+        
+        Map<String, Object> response = new HashMap<>();
+        
+        if (!jobActionRepository.existsByUserAndJobAndActionType(user, job, actionType)) {
+            response.put("success", false);
+            response.put("message", getNotExistsMessage(actionType));
+            return response;
+        }
+        
+        jobActionRepository.deleteByUserAndJobAndActionType(user, job, actionType);
+        
+        response.put("success", true);
+        response.put("message", getRemoveSuccessMessage(actionType));
+        return response;
+    }
+
+    @Transactional
+    public Map<String, Object> markReadingListItemAsRead(String userEmail, Long jobId) {
+        User user = userRepository.findByEmail(userEmail)
+            .orElseThrow(() -> new RuntimeException("User not found"));
+
+        Job job = jobRepository.findById(jobId)
+            .orElseThrow(() -> new RuntimeException("Job not found"));
+
+        JobAction readingItem = jobActionRepository.findByUserAndJobAndActionType(user, job, JobAction.ActionType.READ_LATER);
+        if (readingItem == null) {
+            throw new RuntimeException("Job is not in your reading list");
+        }
+
+        Map<String, Object> metadata = parseMetadata(readingItem.getMetadata());
+        metadata.put("isRead", true);
+        readingItem.setMetadata(toMetadataJson(metadata));
+        jobActionRepository.save(readingItem);
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", true);
+        response.put("message", "Reading list item marked as read");
+        response.put("jobId", jobId);
+        response.put("isRead", true);
+        return response;
+    }
+    
+    // Legacy methods for backward compatibility
+    @Transactional
+    public Map<String, Object> saveJob(String userEmail, SaveJobRequest request) {
+        String metadata = null;
+
+        if (request.getNotes() != null && !request.getNotes().isBlank()) {
+            metadata = toMetadataJson(Map.of("notes", request.getNotes()));
+        }
+
+        return performJobAction(userEmail, request.getJobId(), JobAction.ActionType.SAVE, metadata);
+    }
+    
+    @Transactional
+    public Map<String, Object> unsaveJob(String userEmail, Long jobId) {
+        return removeJobAction(userEmail, jobId, JobAction.ActionType.SAVE);
+    }
+    
+    @Transactional
+    public Map<String, Object> reportJob(String userEmail, ReportJobRequest request) {
+        Map<String, Object> metadataMap = new LinkedHashMap<>();
+        metadataMap.put("reason", request.getReason().name());
+        metadataMap.put("description", request.getDescription() == null ? "" : request.getDescription());
+
+        String metadata = toMetadataJson(metadataMap);
+        return performJobAction(userEmail, request.getJobId(), JobAction.ActionType.REPORT, metadata);
+    }
+    
+    @Transactional
+    public Map<String, Object> addToReadingList(String userEmail, Long jobId) {
+        return performJobAction(userEmail, jobId, JobAction.ActionType.READ_LATER, null);
+    }
+    
+    @Transactional
+    public Map<String, Object> removeFromReadingList(String userEmail, Long jobId) {
+        return removeJobAction(userEmail, jobId, JobAction.ActionType.READ_LATER);
+    }
+    
+    @Transactional
+    public Map<String, Object> shareJob(String userEmail, Long jobId, String shareMethod) {
+        String metadata = toMetadataJson(Map.of("shareMethod", shareMethod == null ? "unknown" : shareMethod));
+        return performJobAction(userEmail, jobId, JobAction.ActionType.SHARE, metadata);
+    }
+    
+    // Get actions by type
+    public List<JobAction> getSavedJobs(String userEmail) {
+        User user = userRepository.findByEmail(userEmail)
+            .orElseThrow(() -> new RuntimeException("User not found"));
+        
+        return jobActionRepository.findSavedJobsByUser(user);
+    }
+    
+    public List<JobAction> getReadingList(String userEmail) {
+        User user = userRepository.findByEmail(userEmail)
+            .orElseThrow(() -> new RuntimeException("User not found"));
+        
+        return jobActionRepository.findReadingListByUser(user);
+    }
+    
+    public List<JobAction> getUserReports(String userEmail) {
+        User user = userRepository.findByEmail(userEmail)
+            .orElseThrow(() -> new RuntimeException("User not found"));
+        
+        return jobActionRepository.findReportedJobsByUser(user);
+    }
+    
+    public List<JobAction> getSharedJobs(String userEmail) {
+        User user = userRepository.findByEmail(userEmail)
+            .orElseThrow(() -> new RuntimeException("User not found"));
+        
+        return jobActionRepository.findSharedJobsByUser(user);
+    }
+    
+    public List<JobAction> getAllUserActions(String userEmail) {
+        User user = userRepository.findByEmail(userEmail)
+            .orElseThrow(() -> new RuntimeException("User not found"));
+        
+        return jobActionRepository.findByUserOrderByCreatedAtDesc(user);
+    }
+    
+    // Check if action exists
+    public boolean isJobSaved(String userEmail, Long jobId) {
+        return hasJobAction(userEmail, jobId, JobAction.ActionType.SAVE);
+    }
+    
+    public boolean isInReadingList(String userEmail, Long jobId) {
+        return hasJobAction(userEmail, jobId, JobAction.ActionType.READ_LATER);
+    }
+    
+    public boolean hasJobAction(String userEmail, Long jobId, JobAction.ActionType actionType) {
+        User user = userRepository.findByEmail(userEmail)
+            .orElseThrow(() -> new RuntimeException("User not found"));
+        
+        Job job = jobRepository.findById(jobId)
+            .orElseThrow(() -> new RuntimeException("Job not found"));
+
+        return jobActionRepository.existsByUserAndJobAndActionType(user, job, actionType);
+    }
+    
+    // Helper methods for messages
+    private String getAlreadyExistsMessage(JobAction.ActionType actionType) {
+        return switch (actionType) {
+            case SAVE -> "Job is already saved";
+            case SHARE -> "Job has already been shared";
+            case REPORT -> "You have already reported this job";
+            case READ_LATER -> "Job is already in your reading list";
+        };
+    }
+    
+    private String getSuccessMessage(JobAction.ActionType actionType) {
+        return switch (actionType) {
+            case SAVE -> "Job saved successfully";
+            case SHARE -> "Job shared successfully";
+            case REPORT -> "Job reported successfully. We will review it shortly.";
+            case READ_LATER -> "Job added to reading list";
+        };
+    }
+    
+    private String getNotExistsMessage(JobAction.ActionType actionType) {
+        return switch (actionType) {
+            case SAVE -> "Job is not saved";
+            case SHARE -> "Job was not shared";
+            case REPORT -> "Job was not reported";
+            case READ_LATER -> "Job is not in your reading list";
+        };
+    }
+    
+    private String getRemoveSuccessMessage(JobAction.ActionType actionType) {
+        return switch (actionType) {
+            case SAVE -> "Job removed from saved jobs";
+            case SHARE -> "Share action removed";
+            case REPORT -> "Report removed";
+            case READ_LATER -> "Job removed from reading list";
+        };
+    }
+}

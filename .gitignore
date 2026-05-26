@@ -1,0 +1,13 @@
+.idea
+.kiro
+.vscode
+/backend/target
+/backend/uploads
+/frontend/node_modules
+/frontend/dist
+/backend/src/main/resources/google-credentials.json
+.idea
+API_INTEGRATION.md
+GOOGLE_MEET_SETUP.md
+MEET_LINK_STATUS.md
+zshrc

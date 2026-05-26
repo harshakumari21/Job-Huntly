@@ -1,0 +1,298 @@
+import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
+import SearchableFilterInput from '../components/SearchableFilterInput';
+import { getCompanyRouteId } from '../data/discoveryData';
+import apiService from '../services/api';
+import {
+  buildLocationFilterOptions,
+  getRegionsForCountryQuery,
+  matchesLocationFilters,
+} from '../utils/locationFilters';
+
+const normalizeDelimitedList = (value) => {
+  if (Array.isArray(value)) return value;
+  return String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+};
+
+const unique = (values) => [...new Set(values.filter(Boolean))];
+
+const buildCompaniesFromJobs = (jobs = []) => {
+  const grouped = new Map();
+
+  jobs.forEach((job) => {
+    const companyName = (job.company || '').trim();
+    if (!companyName) return;
+    const currentJobs = grouped.get(companyName) || [];
+    currentJobs.push(job);
+    grouped.set(companyName, currentJobs);
+  });
+
+  return [...grouped.entries()]
+    .map(([companyName, companyJobs]) => {
+      const primaryJob = companyJobs[0] || {};
+      const tags = unique(companyJobs.flatMap((job) => normalizeDelimitedList(job.categories)));
+      const officeLocations = unique(companyJobs.map((job) => job.location));
+
+      return {
+        id: companyName,
+        name: companyName,
+        description: primaryJob.companyDescription || `${companyName} is hiring right now.`,
+        logo: primaryJob.logo || companyName.slice(0, 2).toUpperCase(),
+        color: primaryJob.color || 'bg-blue-600',
+        industry: tags[0] || 'Hiring',
+        size: primaryJob.companySize || '1-50',
+        tags,
+        officeLocations,
+        jobs: companyJobs.length,
+      };
+    })
+    .sort((left, right) => left.name.localeCompare(right.name));
+};
+
+export default function BrowseCompanies() {
+  const [searchInput, setSearchInput] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [countryInput, setCountryInput] = useState('');
+  const [countryQuery, setCountryQuery] = useState('');
+  const [regionInput, setRegionInput] = useState('');
+  const [regionQuery, setRegionQuery] = useState('');
+  const [selectedIndustries, setSelectedIndustries] = useState([]);
+  const [selectedSizes, setSelectedSizes] = useState([]);
+  const [allCompanies, setAllCompanies] = useState([]);
+
+  useEffect(() => {
+    apiService.getJobs()
+      .then((jobsData) => {
+        if (jobsData?.length) {
+          setAllCompanies(buildCompaniesFromJobs(jobsData));
+        } else {
+          setAllCompanies([]);
+        }
+      })
+      .catch(() => {
+        setAllCompanies([]);
+      });
+  }, []);
+
+  const locationOptions = useMemo(
+    () => buildLocationFilterOptions(allCompanies.flatMap((company) => company.officeLocations || [])),
+    [allCompanies],
+  );
+  const availableRegions = useMemo(
+    () => getRegionsForCountryQuery(allCompanies.flatMap((company) => company.officeLocations || []), countryInput),
+    [allCompanies, countryInput],
+  );
+
+  const industries = useMemo(() => {
+    const counts = allCompanies.reduce((accumulator, company) => {
+      accumulator[company.industry] = (accumulator[company.industry] || 0) + 1;
+      return accumulator;
+    }, {});
+
+    return Object.entries(counts)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([label, count]) => ({ label, count }));
+  }, [allCompanies]);
+
+  const companySizes = useMemo(() => {
+    const order = ['1-50', '51-150', '151-250', '251-500', '501-1000', '1001+'];
+    const counts = allCompanies.reduce((accumulator, company) => {
+      accumulator[company.size] = (accumulator[company.size] || 0) + 1;
+      return accumulator;
+    }, {});
+
+    return order
+      .filter((size) => counts[size])
+      .map((label) => ({ label, count: counts[label] }));
+  }, [allCompanies]);
+
+  const handleSearch = () => {
+    setSearchQuery(searchInput);
+    setCountryQuery(countryInput);
+    setRegionQuery(regionInput.trim());
+  };
+
+  const toggleIndustry = (label) =>
+    setSelectedIndustries(prev => prev.includes(label) ? prev.filter(i => i !== label) : [...prev, label]);
+
+  const toggleSize = (label) =>
+    setSelectedSizes(prev => prev.includes(label) ? prev.filter(s => s !== label) : [...prev, label]);
+
+  const filtered = allCompanies.filter(c => {
+    const q = searchQuery.toLowerCase();
+    const matchesQuery = !searchQuery ||
+      c.name.toLowerCase().includes(q) ||
+      c.industry?.toLowerCase().includes(q) ||
+      c.tags.some(t => t.toLowerCase().includes(q));
+    const matchesLoc = matchesLocationFilters(c.officeLocations || [], countryQuery, regionQuery);
+    const matchesIndustry = selectedIndustries.length === 0 || selectedIndustries.includes(c.industry);
+    const matchesSize = selectedSizes.length === 0 || selectedSizes.includes(c.size);
+    return matchesQuery && matchesLoc && matchesIndustry && matchesSize;
+  });
+
+  const hasCompanies = allCompanies.length > 0;
+
+  return (
+    <div className="min-h-screen bg-white">
+      {/* Search Header */}
+      <div className="bg-white border-b border-gray-200 px-8 py-12 text-center">
+        <h1 className="text-3xl font-bold text-gray-900 mb-2">
+          Find your <span className="text-blue-600 underline decoration-2 underline-offset-4">dream companies</span>
+        </h1>
+        <p className="text-gray-500 text-sm mb-6">Find the dream companies you dream work for</p>
+        <div className="grid max-w-5xl grid-cols-1 gap-3 mx-auto md:grid-cols-[minmax(0,1.4fr)_220px_220px_auto]">
+          <div className="flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-3 shadow-sm">
+            <span className="text-gray-400">🔍</span>
+            <input
+              value={searchInput}
+              onChange={e => setSearchInput(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleSearch()}
+              className="flex-1 text-gray-800 text-sm outline-none"
+              placeholder="Company name or keyword"
+            />
+          </div>
+          <SearchableFilterInput
+            icon="📍"
+            value={countryInput}
+            onChange={(nextValue) => {
+              setCountryInput(nextValue);
+              setRegionInput('');
+            }}
+            options={locationOptions.countries}
+            placeholder="Search country"
+            noResultsLabel="No matching countries"
+          />
+          <SearchableFilterInput
+            icon="🗺️"
+            value={regionInput}
+            onChange={setRegionInput}
+            options={availableRegions}
+            disabled={!countryInput.trim()}
+            placeholder={countryInput.trim() ? `Search state / city in ${countryInput}` : 'Search state / city'}
+            noResultsLabel="No matching state or city"
+          />
+          <button onClick={handleSearch} className="rounded-lg bg-blue-600 px-6 py-3 text-sm font-medium text-white hover:bg-blue-700">Search</button>
+        </div>
+        <p className="text-gray-400 text-xs mt-3">Popular: Revolut, Canva, Terraform, Dropbox</p>
+      </div>
+
+      <div className="max-w-6xl mx-auto px-8 py-8 flex gap-8">
+        {/* Sidebar */}
+        <aside className="w-52 flex-shrink-0">
+          <div className="mb-6">
+            <div className="flex justify-between items-center mb-3">
+              <h3 className="font-semibold text-gray-900 text-sm">Industry</h3>
+              <span className="text-gray-400 text-xs">▲</span>
+            </div>
+            {industries.map(i => (
+              <label key={i.label} className="flex items-center gap-2 text-sm text-gray-600 mb-2.5 cursor-pointer">
+                <input type="checkbox" checked={selectedIndustries.includes(i.label)}
+                  onChange={() => toggleIndustry(i.label)} className="accent-blue-600 w-4 h-4" />
+                <span className="flex-1">{i.label}</span>
+                <span className="text-gray-400 text-xs">({i.count})</span>
+              </label>
+            ))}
+          </div>
+          <div>
+            <div className="flex justify-between items-center mb-3">
+              <h3 className="font-semibold text-gray-900 text-sm">Company Size</h3>
+              <span className="text-gray-400 text-xs">▲</span>
+            </div>
+            {companySizes.map(s => (
+              <label key={s.label} className="flex items-center gap-2 text-sm text-gray-600 mb-2.5 cursor-pointer">
+                <input type="checkbox" checked={selectedSizes.includes(s.label)}
+                  onChange={() => toggleSize(s.label)} className="accent-blue-600 w-4 h-4" />
+                <span className="flex-1">{s.label}</span>
+                <span className="text-gray-400 text-xs">({s.count})</span>
+              </label>
+            ))}
+          </div>
+        </aside>
+
+        {/* Results */}
+        <div className="flex-1">
+          <div className="flex justify-between items-center mb-5">
+            <div>
+              <h2 className="font-bold text-gray-900 text-lg">All Companies</h2>
+              <p className="text-sm text-gray-400">Showing {filtered.length} results</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-gray-500">Sort by:</span>
+              <select className="border border-gray-300 rounded-lg text-sm px-3 py-1.5 outline-none text-gray-700">
+                <option>Most relevant</option>
+                <option>Most jobs</option>
+                <option>A-Z</option>
+              </select>
+              <button className="p-2 rounded-lg border border-gray-300 text-gray-400 hover:border-blue-600 hover:text-blue-600">
+                <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M1 2a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V2zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1V2zM1 7a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V7zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1V7z"/></svg>
+              </button>
+              <button className="p-2 rounded-lg border border-blue-600 text-blue-600">
+                <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path fillRule="evenodd" d="M2.5 12a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5zm0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5zm0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5z"/></svg>
+              </button>
+            </div>
+          </div>
+
+          {!hasCompanies ? (
+            <div className="text-center py-20 text-gray-400">
+              <p className="text-4xl mb-3">🏢</p>
+              <p className="font-medium text-gray-600">No company jobs posted yet</p>
+              <p className="text-sm mt-1">Companies will appear here once they post roles.</p>
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="text-center py-20 text-gray-400">
+              <p className="text-4xl mb-3">🔍</p>
+              <p className="font-medium text-gray-600">No companies found</p>
+              <p className="text-sm mt-1">
+                {countryQuery.trim() || regionQuery.trim()
+                  ? 'No companies match the selected country and state/city.'
+                  : 'Try a different keyword or clear filters'}
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-4">
+              {filtered.map(company => (
+                <Link key={company.name} to={`/companies/${getCompanyRouteId(company)}`}
+                  className="bg-white border border-gray-200 rounded-xl p-5 hover:shadow-md transition block">
+                  <div className="flex items-start gap-4">
+                    <div className={`${company.color} text-white rounded-xl w-12 h-12 flex items-center justify-center font-bold flex-shrink-0`}>{company.logo}</div>
+                    <div className="flex-1">
+                      <div className="flex justify-between items-start">
+                        <h3 className="font-semibold text-gray-900">{company.name}</h3>
+                        <span className="text-xs text-blue-600 font-medium flex-shrink-0 ml-2">{company.jobs} Jobs</span>
+                      </div>
+                      <p className="text-sm text-gray-500 mt-1 line-clamp-2">{company.description}</p>
+                      <div className="flex flex-wrap gap-1.5 mt-3">
+                        {company.tags.map(t => (
+                          <span key={t} className={`text-xs rounded px-2 py-0.5 border ${
+                            t === 'Blockchain' ? 'bg-blue-50 text-blue-600 border-blue-200' :
+                            t === 'Payment Gateway' ? 'bg-yellow-50 text-yellow-700 border-yellow-200' :
+                            'bg-orange-50 text-orange-600 border-orange-200'
+                          }`}>{t}</span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          )}
+
+          {hasCompanies ? (
+            <div className="flex justify-center items-center gap-1 mt-8">
+              <button className="w-8 h-8 flex items-center justify-center text-gray-400 hover:bg-gray-100 rounded">‹</button>
+              {[1,2,3].map(p => (
+                <button key={p} className={`w-8 h-8 rounded text-sm font-medium ${p === 1 ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-100'}`}>{p}</button>
+              ))}
+              <span className="text-gray-400 text-sm px-1">...</span>
+              <button className="w-8 h-8 rounded text-sm text-gray-600 hover:bg-gray-100">8</button>
+              <button className="w-8 h-8 flex items-center justify-center text-gray-400 hover:bg-gray-100 rounded">›</button>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,437 @@
+import { useState, useMemo, useEffect } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
+import ApplicationProgressBar from '../components/ApplicationProgressBar';
+import SearchableFilterInput from '../components/SearchableFilterInput';
+import apiService from '../services/api';
+import {
+  buildApplicationProgressMap,
+  getSubmittedApplicationIds,
+  syncSubmittedApplications,
+} from '../utils/applicationDrafts';
+import {
+  buildLocationFilterOptions,
+  getRegionsForCountryQuery,
+  matchesLocationFilters,
+} from '../utils/locationFilters';
+
+const EMPLOYMENT_TYPES = ['Full-Time', 'Part-Time', 'Remote', 'Internship', 'Contract'];
+const CATEGORIES = ['Design', 'Sales', 'Marketing', 'Business', 'Human Resource', 'Finance', 'Engineering', 'Technology'];
+const JOB_LEVELS = ['Entry Level', 'Mid Level', 'Senior Level', 'Director', 'VP or Above'];
+const SALARY_RANGES = [
+  { label: '$700 - $1000', min: 700, max: 1000 },
+  { label: '$1000 - $1500', min: 1000, max: 1500 },
+  { label: '$1500 - $2000', min: 1500, max: 2000 },
+  { label: '$3000 or above', min: 3000, max: Infinity },
+];
+
+const normalizeJobTypes = (value) => {
+  if (Array.isArray(value)) return value;
+  return String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+};
+
+const isCompanyJob = (job) => job?.postedByUserId !== null && job?.postedByUserId !== undefined;
+
+export default function FindJobs() {
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const companyParam = searchParams.get('company')?.trim() || '';
+  const handleApply = (jobId) => {
+    if (!user) {
+      navigate('/login');
+      return;
+    }
+    navigate(`/jobs/${jobId}`);
+  };
+
+  const [searchInput, setSearchInput] = useState(companyParam);
+  const [searchQuery, setSearchQuery] = useState(companyParam);
+  const [countryInput, setCountryInput] = useState('');
+  const [countryQuery, setCountryQuery] = useState('');
+  const [regionInput, setRegionInput] = useState('');
+  const [regionQuery, setRegionQuery] = useState('');
+  const [viewGrid, setViewGrid] = useState(false);
+  const [allJobs, setAllJobs] = useState([]);
+  const [submittedJobIds, setSubmittedJobIds] = useState([]);
+
+  useEffect(() => {
+    let active = true;
+
+    setSubmittedJobIds(user ? Array.from(getSubmittedApplicationIds(user)) : []);
+
+    Promise.all([
+      apiService.getJobs().catch(() => null),
+      user ? apiService.getApplications().catch(() => null) : Promise.resolve(null),
+    ])
+      .then(([jobsData, applications]) => {
+        if (!active) return;
+
+        if (jobsData?.length) {
+          setAllJobs(jobsData.filter(isCompanyJob));
+        } else {
+          setAllJobs([]);
+        }
+
+        if (user && Array.isArray(applications)) {
+          setSubmittedJobIds(Array.from(syncSubmittedApplications(user, applications)));
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!active) return;
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [user]);
+
+  useEffect(() => {
+    if (!companyParam) return;
+
+    setSearchInput(companyParam);
+    setSearchQuery(companyParam);
+    setCountryInput('');
+    setCountryQuery('');
+    setRegionInput('');
+    setRegionQuery('');
+  }, [companyParam]);
+
+  const [selTypes, setSelTypes] = useState([]);
+  const [selCats, setSelCats] = useState([]);
+  const [selLevels, setSelLevels] = useState([]);
+  const [selSalary, setSelSalary] = useState([]);
+
+  const toggle = (arr, setArr, val) =>
+    setArr(prev => prev.includes(val) ? prev.filter(x => x !== val) : [...prev, val]);
+  const allJobLocations = useMemo(() => allJobs.map((job) => job.location).filter(Boolean), [allJobs]);
+  const locationOptions = useMemo(() => buildLocationFilterOptions(allJobLocations), [allJobLocations]);
+  const availableRegions = useMemo(
+    () => getRegionsForCountryQuery(allJobLocations, countryInput),
+    [allJobLocations, countryInput],
+  );
+
+  const typeCounts = useMemo(() => (
+    Object.fromEntries(
+      EMPLOYMENT_TYPES.map((t) => [t, allJobs.filter((j) => normalizeJobTypes(j.type).includes(t)).length]),
+    )
+  ), [allJobs]);
+  const catCounts = useMemo(() => Object.fromEntries(CATEGORIES.map(c => [c, allJobs.filter(j => Array.isArray(j.categories) ? j.categories.includes(c) : (j.categories || '').includes(c)).length])), [allJobs]);
+  const levelCounts = useMemo(() => Object.fromEntries(JOB_LEVELS.map(l => [l, allJobs.filter(j => j.level === l).length])), [allJobs]);
+
+  const filtered = useMemo(() => {
+    let result = allJobs.filter(j => {
+      const cats = Array.isArray(j.categories) ? j.categories : (j.categories || '').split(',').map(s => s.trim()).filter(Boolean);
+      const q = searchQuery.toLowerCase();
+      const matchSearch = !q || (j.title || '').toLowerCase().includes(q) || (j.company || '').toLowerCase().includes(q);
+      const matchLoc = matchesLocationFilters([j.location], countryQuery, regionQuery);
+      const jobTypes = normalizeJobTypes(j.type);
+      const matchType   = selTypes.length === 0 || selTypes.some((t) => jobTypes.includes(t));
+      const matchCat    = selCats.length === 0  || selCats.some(c => cats.includes(c));
+      const matchLevel  = selLevels.length === 0 || selLevels.includes(j.level);
+      const matchSalary = selSalary.length === 0 || selSalary.some(r => {
+        const range = SALARY_RANGES.find(s => s.label === r);
+        return range && j.salary >= range.min && j.salary <= range.max;
+      });
+      return matchSearch && matchType && matchCat && matchLevel && matchSalary && matchLoc;
+    });
+    return result;
+  }, [searchQuery, countryQuery, regionQuery, selTypes, selCats, selLevels, selSalary, allJobs]);
+
+  const applicationProgressMap = useMemo(() => {
+    return buildApplicationProgressMap(
+      user,
+      filtered.map((job) => job.id),
+      submittedJobIds,
+    );
+  }, [filtered, submittedJobIds, user]);
+  const handleSearch = () => {
+    setSearchQuery(searchInput);
+    setCountryQuery(countryInput);
+    setRegionQuery(regionInput.trim());
+    if (companyParam) {
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete('company');
+      setSearchParams(nextParams, { replace: true });
+    }
+  };
+  const clearAll = () => {
+    setSearchInput('');
+    setSearchQuery('');
+    setCountryInput('');
+    setCountryQuery('');
+    setRegionInput('');
+    setRegionQuery('');
+    setSelTypes([]);
+    setSelCats([]);
+    setSelLevels([]);
+    setSelSalary([]);
+    if (companyParam) {
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete('company');
+      setSearchParams(nextParams, { replace: true });
+    }
+  };
+  const hasActiveLocationFilter = countryQuery.trim() || regionQuery.trim();
+
+  return (
+    <div className="min-h-screen bg-white">
+      {/* Header search */}
+      <div className="bg-white border-b border-gray-200 px-8 py-12 text-center">
+        <h1 className="text-3xl font-bold text-gray-900 mb-2">
+          Find your <span className="text-blue-600">dream job</span>
+        </h1>
+        <p className="text-gray-500 text-sm mb-6">Find your next career at companies like HubSpot, Nike, and Dropbox</p>
+        <div className="grid max-w-5xl grid-cols-1 gap-3 mx-auto md:grid-cols-[minmax(0,1.4fr)_220px_220px_auto]">
+          <div className="flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-3 shadow-sm">
+            <span className="text-gray-400">🔍</span>
+            <input value={searchInput} onChange={e => setSearchInput(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleSearch()}
+              className="flex-1 text-gray-800 text-sm outline-none" placeholder="Job title or keyword" />
+          </div>
+          <SearchableFilterInput
+            icon="📍"
+            value={countryInput}
+            onChange={(nextValue) => {
+              setCountryInput(nextValue);
+              setRegionInput('');
+            }}
+            options={locationOptions.countries}
+            placeholder="Search country"
+            noResultsLabel="No matching countries"
+          />
+          <SearchableFilterInput
+            icon="🗺️"
+            value={regionInput}
+            onChange={setRegionInput}
+            options={availableRegions}
+            disabled={!countryInput.trim()}
+            placeholder={countryInput.trim() ? `Search state / city in ${countryInput}` : 'Search state / city'}
+            noResultsLabel="No matching state or city"
+          />
+          <button onClick={handleSearch} className="rounded-lg bg-blue-600 px-6 py-3 text-sm font-medium text-white hover:bg-blue-700">Search</button>
+        </div>
+        <p className="text-gray-400 text-xs mt-3">Popular: UI Designer, UX Researcher, Android, Admin</p>
+      </div>
+
+      <div className="max-w-6xl mx-auto px-8 py-8 flex gap-8">
+        {/* Sidebar filters */}
+        <aside className="w-52 flex-shrink-0">
+          {/* Employment Type */}
+          <div className="mb-6">
+            <div className="flex justify-between items-center mb-3">
+              <h3 className="font-semibold text-gray-900 text-sm">Type of Employment</h3>
+              <span className="text-gray-400 text-xs">▲</span>
+            </div>
+            {EMPLOYMENT_TYPES.map(t => (
+              <label key={t} className="flex items-center gap-2 text-sm text-gray-600 mb-2.5 cursor-pointer hover:text-gray-900">
+                <input type="checkbox" checked={selTypes.includes(t)} onChange={() => toggle(selTypes, setSelTypes, t)} className="accent-blue-600 w-4 h-4" />
+                <span className="flex-1">{t}</span>
+                <span className="text-gray-400 text-xs">({typeCounts[t] || 0})</span>
+              </label>
+            ))}
+          </div>
+
+          {/* Categories */}
+          <div className="mb-6">
+            <div className="flex justify-between items-center mb-3">
+              <h3 className="font-semibold text-gray-900 text-sm">Categories</h3>
+              <span className="text-gray-400 text-xs">▲</span>
+            </div>
+            {CATEGORIES.map(c => (
+              <label key={c} className="flex items-center gap-2 text-sm text-gray-600 mb-2.5 cursor-pointer hover:text-gray-900">
+                <input type="checkbox" checked={selCats.includes(c)} onChange={() => toggle(selCats, setSelCats, c)} className="accent-blue-600 w-4 h-4" />
+                <span className="flex-1">{c}</span>
+                <span className="text-gray-400 text-xs">({catCounts[c] || 0})</span>
+              </label>
+            ))}
+          </div>
+
+          {/* Job Level */}
+          <div className="mb-6">
+            <div className="flex justify-between items-center mb-3">
+              <h3 className="font-semibold text-gray-900 text-sm">Job Level</h3>
+              <span className="text-gray-400 text-xs">▲</span>
+            </div>
+            {JOB_LEVELS.map(l => (
+              <label key={l} className="flex items-center gap-2 text-sm text-gray-600 mb-2.5 cursor-pointer hover:text-gray-900">
+                <input type="checkbox" checked={selLevels.includes(l)} onChange={() => toggle(selLevels, setSelLevels, l)} className="accent-blue-600 w-4 h-4" />
+                <span className="flex-1">{l}</span>
+                <span className="text-gray-400 text-xs">({levelCounts[l] || 0})</span>
+              </label>
+            ))}
+          </div>
+
+          {/* Salary Range */}
+          <div>
+            <div className="flex justify-between items-center mb-3">
+              <h3 className="font-semibold text-gray-900 text-sm">Salary Range</h3>
+              <span className="text-gray-400 text-xs">▲</span>
+            </div>
+            {SALARY_RANGES.map(s => (
+              <label key={s.label} className="flex items-center gap-2 text-sm text-gray-600 mb-2.5 cursor-pointer hover:text-gray-900">
+                <input type="checkbox" checked={selSalary.includes(s.label)} onChange={() => toggle(selSalary, setSelSalary, s.label)} className="accent-blue-600 w-4 h-4" />
+                <span className="flex-1">{s.label}</span>
+              </label>
+            ))}
+          </div>
+        </aside>
+
+        {/* Job list */}
+        <div className="flex-1">
+          <div className="flex justify-between items-center mb-5">
+            <div>
+              <h2 className="font-bold text-gray-900 text-lg">All Jobs</h2>
+              <p className="text-sm text-gray-400">Showing {filtered.length} results</p>
+              {hasActiveLocationFilter ? (
+                <p className="text-xs text-gray-400 mt-1">
+                  {regionQuery.trim()
+                    ? `Location: ${regionQuery.trim()}, ${countryQuery.trim()}`
+                    : `Country: ${countryQuery.trim()}`}
+                </p>
+              ) : null}
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-gray-500">Sort by:</span>
+              <select className="border border-gray-300 rounded-lg text-sm px-3 py-1.5 outline-none text-gray-700">
+                <option>Most relevant</option>
+                <option>Newest</option>
+                <option>Oldest</option>
+              </select>
+              <button onClick={() => setViewGrid(true)} className={`p-2 rounded-lg border ${viewGrid ? 'border-blue-600 text-blue-600' : 'border-gray-300 text-gray-400'}`}>
+                <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M1 2a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V2zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1V2zM1 7a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V7zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1V7z"/></svg>
+              </button>
+              <button onClick={() => setViewGrid(false)} className={`p-2 rounded-lg border ${!viewGrid ? 'border-blue-600 text-blue-600' : 'border-gray-300 text-gray-400'}`}>
+                <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path fillRule="evenodd" d="M2.5 12a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5zm0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5zm0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5z"/></svg>
+              </button>
+            </div>
+          </div>
+
+          {/* List view */}
+          {filtered.length === 0 ? (
+            <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-gray-300 bg-gray-50 px-6 py-16 text-center">
+              <p className="text-4xl mb-3">🔍</p>
+              <p className="text-lg font-medium text-gray-600">No company jobs posted yet</p>
+              <p className="text-sm text-gray-400 mt-1">
+                {hasActiveLocationFilter
+                  ? 'No jobs match the selected country and state/city.'
+                  : 'Check back soon for new openings.'}
+              </p>
+              {hasActiveLocationFilter ? (
+                <button onClick={clearAll} className="mt-4 text-sm text-blue-600 hover:underline">Clear all filters</button>
+              ) : null}
+            </div>
+          ) : !viewGrid && (
+            <div className="space-y-4">
+              {filtered.map(job => {
+                const applicationState = applicationProgressMap[String(job.id)];
+                const isSubmitted = applicationState?.status === 'submitted';
+                const buttonClass = isSubmitted
+                  ? 'bg-green-100 text-green-700 hover:bg-green-200'
+                  : 'bg-blue-600 text-white hover:bg-blue-700';
+                const buttonLabel = isSubmitted
+                  ? 'Applied'
+                  : applicationState
+                    ? 'Continue'
+                    : 'Apply';
+
+                return (
+                  <div key={job.id} className="bg-white border border-gray-200 rounded-xl p-5 flex items-center gap-4 hover:shadow-sm transition">
+                    <div className={`${job.color} text-white rounded-xl w-12 h-12 flex items-center justify-center font-bold text-lg flex-shrink-0`}>{job.logo}</div>
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <h3 className="font-semibold text-gray-900">{job.title}</h3>
+                      </div>
+                      <p className="text-sm text-gray-500">{job.company} • {job.location}</p>
+                      <div className="flex flex-wrap gap-2 mt-2">
+                        {normalizeJobTypes(job.type).map((type) => (
+                          <span key={type} className="text-xs border border-green-500 text-green-600 rounded px-2 py-0.5">{type}</span>
+                        ))}
+                        {(Array.isArray(job.categories) ? job.categories : (job.categories || '').split(',').map(s => s.trim()).filter(Boolean)).map(c => (
+                          <span key={c} className={`text-xs rounded px-2 py-0.5 border ${c === 'Design' ? 'bg-yellow-50 text-yellow-700 border-yellow-200' : 'bg-orange-50 text-orange-600 border-orange-200'}`}>{c}</span>
+                        ))}
+                      </div>
+                      <ApplicationProgressBar applicationState={applicationState} className="mt-3 max-w-sm" />
+                    </div>
+                    <div className="flex flex-col items-end gap-2 flex-shrink-0">
+                      <button
+                        onClick={() => handleApply(job.id)}
+                        className={`${buttonClass} text-sm px-5 py-2 rounded-lg font-medium transition`}
+                      >
+                        {buttonLabel}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Grid view */}
+          {viewGrid && (
+            <div className="grid grid-cols-2 gap-4">
+              {filtered.map(job => {
+                const applicationState = applicationProgressMap[String(job.id)];
+                const isSubmitted = applicationState?.status === 'submitted';
+                const buttonClass = isSubmitted
+                  ? 'bg-green-100 text-green-700 hover:bg-green-200'
+                  : 'bg-blue-600 text-white hover:bg-blue-700';
+                const buttonLabel = isSubmitted
+                  ? 'Applied'
+                  : applicationState
+                    ? 'Continue'
+                    : 'Apply';
+
+                return (
+                  <div key={job.id} className="bg-white border border-gray-200 rounded-xl p-5 hover:shadow-sm transition">
+                    <div className="flex items-start justify-between mb-3">
+                      <div className="flex flex-wrap gap-2">
+                        {normalizeJobTypes(job.type).map((type) => (
+                          <span key={type} className="text-xs border border-green-500 text-green-600 rounded px-2 py-0.5">{type}</span>
+                        ))}
+                      </div>
+                      <button
+                        onClick={() => handleApply(job.id)}
+                        className={`${buttonClass} text-xs px-3 py-1.5 rounded-lg transition`}
+                      >
+                        {buttonLabel}
+                      </button>
+                    </div>
+                    <div className="flex items-start gap-3">
+                      <div className={`${job.color} text-white rounded-xl w-11 h-11 flex items-center justify-center font-bold flex-shrink-0`}>{job.logo}</div>
+                      <div>
+                        <h3 className="font-semibold text-gray-900 text-sm">{job.title}</h3>
+                        <p className="text-xs text-gray-500">{job.company} • {job.location}</p>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2 mt-3">
+                      {(Array.isArray(job.categories) ? job.categories : (job.categories || '').split(',').map(s => s.trim()).filter(Boolean)).map(c => (
+                        <span key={c} className={`text-xs rounded px-2 py-0.5 border ${c === 'Design' ? 'bg-yellow-50 text-yellow-700 border-yellow-200' : 'bg-orange-50 text-orange-600 border-orange-200'}`}>{c}</span>
+                      ))}
+                    </div>
+                    <ApplicationProgressBar applicationState={applicationState} className="mt-3" />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Pagination */}
+          <div className="flex justify-center items-center gap-1 mt-8">
+            <button className="w-8 h-8 flex items-center justify-center text-gray-400 hover:bg-gray-100 rounded">‹</button>
+            {[1,2,3,4,5].map(p => (
+              <button key={p} className={`w-8 h-8 rounded text-sm font-medium ${p === 1 ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-100'}`}>{p}</button>
+            ))}
+            <span className="text-gray-400 text-sm px-1">...</span>
+            <button className="w-8 h-8 rounded text-sm text-gray-600 hover:bg-gray-100">33</button>
+            <button className="w-8 h-8 flex items-center justify-center text-gray-400 hover:bg-gray-100 rounded">›</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

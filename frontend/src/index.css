@@ -1,0 +1,68 @@
+@import "tailwindcss";
+
+* { box-sizing: border-box; }
+body { margin: 0; font-family: 'Inter', sans-serif; }
+
+/* Fix for browser autocomplete yellow background */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 30px white inset !important;
+  -webkit-text-fill-color: #000000 !important;
+}
+
+input[type="email"]:-webkit-autofill,
+input[type="password"]:-webkit-autofill {
+  -webkit-box-shadow: 0 0 0 30px white inset !important;
+  -webkit-text-fill-color: #000000 !important;
+}
+
+/* ContentEditable placeholder styling */
+[contenteditable][data-placeholder]:empty:before {
+  content: attr(data-placeholder);
+  color: #64748b;
+  pointer-events: none;
+  position: absolute;
+}
+
+[contenteditable]:focus {
+  outline: none;
+}
+
+/* Rich text editor list styling */
+[contenteditable] ul {
+  list-style-type: disc;
+  margin-left: 1.5rem;
+  padding-left: 0.5rem;
+}
+
+[contenteditable] ol {
+  list-style-type: decimal;
+  margin-left: 1.5rem;
+  padding-left: 0.5rem;
+}
+
+[contenteditable] li {
+  margin: 0.25rem 0;
+  display: list-item;
+}
+
+@keyframes ring {
+  0%   { transform: rotate(0deg); }
+  5%   { transform: rotate(15deg); }
+  10%  { transform: rotate(-12deg); }
+  15%  { transform: rotate(10deg); }
+  20%  { transform: rotate(-8deg); }
+  25%  { transform: rotate(5deg); }
+  30%  { transform: rotate(0deg); }
+  100% { transform: rotate(0deg); }
+}
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateX(100%); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+.animate-slide-in {
+  animation: slide-in 0.3s ease-out;
+}
